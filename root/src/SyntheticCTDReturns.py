@@ -14,12 +14,15 @@ class SyntheticCTD:
     def __init__(self) -> None:
         
         self.deliv_path  = r"C:\Users\Diego\Desktop\app_prod\BBGFuturesManager\data\BondDeliverableRisk"
+        if os.path.exists(self.deliv_path) == False:
+            self.deliv_path = r"/Users/diegoalvarez/Desktop/BBGFuturesManager/data/BondDeliverableRisk"
+        
         self.tsy_tickers = {
             "TU" : 2,
-            "TY" : 10,
+            "TY" : 7,
             "FV" : 5,
             "WN" : 30,
-            "UXY": 20}
+            "UXY": 10}
         
         self.root_path = os.path.abspath(os.path.join(os.getcwd(), os.pardir))
         self.repo_path = os.path.abspath(os.path.join(self.root_path, os.pardir))
@@ -120,19 +123,21 @@ class SyntheticCTD:
             if verbose == True: print("Couldn't find CTD return data")
             df_out = (self.get_synthetic_return_data().rename(
                 columns = {"yield": "yld"}).
+                assign(yld = lambda x: x.yld / 100).
                 groupby("security").
                 apply(self._get_diff).
                 reset_index(drop = True).
                 assign(
-                    dur_rtn  = lambda x: x.yld_diff * x.duration,
-                    cnvx_rtn = lambda x: (1 / 2) * (x.yld_diff ** 2) * x.convexity,
-                    bnd_rtn  = lambda x: (x.yld / 360) -x.dur_rtn + x.cnvx_rtn).
+                    yld = lambda x: x.yld,
+                    dur_rtn = lambda x: - x.yld_diff * x.duration,
+                    cvx_rtn = lambda x: 0.5 * (x.yld_diff ** 2) * x.convexity,
+                    bnd_rtn = lambda x: (x.yld / 360) + x.dur_rtn + x.cvx_rtn).
                 drop(columns = ["security", "maturity"]))
 
             if verbose == True: print("Saving data\n")
             df_out.to_parquet(path = file_path, engine = "pyarrow")
-
-
+            
+        return df_out
         
 def main() -> None:
 

@@ -35,6 +35,8 @@ class GitHubCollector:
     def get_raw_cusip_ts(self, verbose: bool = False) -> pd.DataFrame: 
         
         file_path = os.path.join(self.data_path, "CUSIP-Timeseries")
+        if os.path.exists(file_path) == False: os.makedirs(file_path)
+        
         if len(os.listdir(file_path)) == 0:
 
             subprocess.run(
@@ -196,6 +198,11 @@ class GitHubCollector:
         
         return df_partial_clean
     
+    
+def main() -> None: 
         
-#GitHubCollector().get_cleaned_historical_ct_yield()
-#df = GitHubCollector().get_raw_historical_ct_yield()
+    
+    df = GitHubCollector().get_raw_historical_ct_yield(verbose = True)
+    df = GitHubCollector().get_cleaned_historical_ct_yield(verbose = True)
+    
+if __name__ == "__main__": main()
