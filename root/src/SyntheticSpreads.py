@@ -12,7 +12,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from SyntheticCTDReturns import SyntheticCTD
-from itertools import combinations
+from itertools import permutations
+from tqdm import tqdm
 
 class Spread(SyntheticCTD):
     
@@ -23,64 +24,88 @@ class Spread(SyntheticCTD):
         self.inv_tsy_tickers = {v: k for k, v in self.tsy_tickers.items()}
         self.combos          = [
             ("DGS" + str(combo[0]), "DGS" + str(combo[1])) 
-            for combo in list(combinations(list(self.inv_tsy_tickers.keys()), 2))
-            if combo[0] < combo[1]]
+            for combo in list(permutations(list(self.inv_tsy_tickers.keys()), 2))
+            if combo[0] < combo[1]] 
+    
+    def _get_rtn(self, df: pd.DataFrame, combo: tuple) -> pd.DataFrame: 
         
-    def _prep_rtn(self, df: pd.DataFrame, combo: tuple) -> pd.DataFrame: 
+        combo_dict = {
+            "long" : combo[0],
+            "short": combo[1]}
         
-        df_namer = (pd.DataFrame(
-            {
-                "yield_tenor" : list(combo),
-                "position"    : ["S", "L"]}))
-             
-        df_out = (df.merge(
-            right = df_namer, how = "inner", on = ["yield_tenor"]).
-            drop(columns = ["cvx_rtn", "bnd_rtn", "dur_rtn", "yield_tenor"]).
-            rename(columns = {
-                "convexity": "cvx",
-                "duration" : "dur"}).
+        renamer = {
+            "long weight" : "long_weight",
+            "short weight": "short_weight",
+            "long"        : "long_val",
+            "short"       : "short_val"}
+        
+        tenors = list(combo_dict.values())
+        
+        df_namer = (pd.DataFrame.from_dict(
+            data    = combo_dict, 
+            orient  = "index",
+            columns = ["yield_tenor"]).
+            reset_index().
+            rename(columns = {"index": "position"}))
+        
+        df_tmp = (df.query(
+            "yield_tenor == @tenors").
+            merge(right = df_namer, how = "inner", on = ["yield_tenor"]))
+        
+        df_inv_dur = (df_tmp.pivot(
+            index = "date", columns = "yield_tenor", values = "duration").
+            apply(lambda x: 1 / x).
+            shift().
+            dropna().
+            reset_index().
+            melt(id_vars = "date"))
+        
+        df_out = (df_inv_dur.drop(
+            columns = ["yield_tenor"]).
+            groupby("date").
+            agg("sum").
+            rename(columns = {"value": "cum_value"}).
+            merge(right = df_inv_dur, how = "inner", on = ["date"]).
+            assign(weight = lambda x: x.value / x.cum_value)
+            [["date", "yield_tenor", "weight"]].
+            merge(right = df_tmp, how = "inner", on = ["date", "yield_tenor"]).
+            drop(columns = ["yield_tenor"]).
             melt(id_vars = ["date", "position"]).
-            assign(variable = lambda x: x.position + x.variable).
-            drop(columns = ["position"]).
-            pivot(index = "date", columns = "variable", values = "value").
-            sort_index().
+            assign(tmp = lambda x: x.position + " " + x.variable).
+            pivot(index = "date", columns = "tmp", values = "value").
+            reset_index().
+            melt(id_vars = ["date", "long weight", "short weight"]).
             assign(
-                lag_Ldur = lambda x: x.Ldur.shift(),
-                lag_Sdur = lambda x: x.Sdur.shift(),
-                spread   = combo[1] + "-" + combo[0],
-                Lweight  = lambda x: x.lag_Sdur / (x.lag_Ldur + x.lag_Sdur),
-                Sweight  = lambda x: x.lag_Ldur / (x.lag_Ldur + x.lag_Sdur),
-                Ldur_rtn = lambda x: - (x.Ldur * x.Lyld_diff),
-                Lcvx_rtn = lambda x: 0.5 * (x.Lyld_diff ** 2) * x.Lcvx,
-                Sdur_rtn = lambda x: - (x.Sdur * x.Syld_diff),
-                Scvx_rtn = lambda x: 0.5 * (x.Syld_diff ** 2) * x.Scvx,
-                Lbnd_rtn = lambda x: (x.Lyld / 360) + x.Ldur_rtn + x.Lcvx_rtn,
-                Sbnd_rtn = lambda x: (x.Syld / 360) + x.Sdur_rtn + x.Scvx_rtn).
-            drop(columns = ["lag_Ldur", "lag_Sdur"]).
-            dropna())
+                pos = lambda x: x.tmp.str.split(" ").str[0],
+                var = lambda x: x.tmp.str.split(" ").str[1]).
+            pivot(index = ["date", "long weight", "short weight", "var"], columns = "pos", values = "value").
+            reset_index().
+            rename(columns = renamer).
+            assign(steepener = combo[0].replace("DGS", "") + "s" + combo[1].replace("DGS", "") + "s steepener"))
         
         return df_out
+    
+    def get_spread(self, verbose: bool = False) -> pd.DataFrame:
         
-    def get_spread(self, verbose: bool = False) -> pd.DataFrame: 
-        
-        file_path = os.path.join(self.ctd_path, "SyntheticCTDSpreadRtn.parquet")
+        file_path = os.path.join(self.ctd_path, "SyntheticCTDSteepenerRtn.parquet")
         try:
-            
-            if verbose == True: print("Trying to find CTD Spread Return")
+        
+            if verbose == True: print("Trying to get CTD Steepener return data")
             df_out = pd.read_parquet(path = file_path, engine = "pyarrow")
             if verbose == True: print("Found Data\n")
             
-        except: 
-            
-            if verbose == True: print("Couldn't find data, collecting it now")
-            df_prep = self.get_synthetic_rtn_calc()
-            df_out  = (pd.concat([
-                self._prep_rtn(df_prep, combo) 
-                for combo in self.combos]))
-            
-            if verbose == True: print("Saving data\n")
-            df_out.to_parquet(path = file_path, engine = "pyarrow")
+        except:
         
+            if verbose == True: print("Couldn't find data, generating it now")
+        
+            df     = self.get_synthetic_rtn_calc()
+            df_out = (pd.concat([
+                self._get_rtn(df, combo)
+                for combo in tqdm(self.combos, desc = "Processing Pair")]))
+            
+            if verbose == True: print("\nSaving data\n")
+            df_out.to_parquet(path = file_path, engine = "pyarrow")
+            
         return df_out
  
 def main() -> None: 
